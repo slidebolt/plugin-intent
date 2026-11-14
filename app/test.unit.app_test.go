@@ -224,8 +224,16 @@ func TestListenersComeFromConfig(t *testing.T) {
 	if len(h.app.listeners) != 2 {
 		t.Fatalf("a bad name must be ignored: %v", h.app.listeners)
 	}
-	if _, err := h.store.Get(domain.DeviceKey{Plugin: PluginID, ID: IntentsDevice}); err != nil {
+	rawDevice, err := h.store.Get(domain.DeviceKey{Plugin: PluginID, ID: IntentsDevice})
+	if err != nil {
 		t.Fatalf("intents device missing: %v", err)
+	}
+	var intentsDevice domain.Device
+	if err := json.Unmarshal(rawDevice, &intentsDevice); err != nil {
+		t.Fatalf("decode intents device: %v", err)
+	}
+	if intentsDevice.Entities == nil {
+		t.Fatal("intents device entities must serialize as an empty array")
 	}
 }
 

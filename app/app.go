@@ -229,7 +229,7 @@ func (a *App) ensureIntentsDevice() error {
 	if _, err := a.store.Get(key); err == nil {
 		return nil
 	}
-	if err := a.store.Save(domain.Device{ID: IntentsDevice, Plugin: PluginID, Name: "Intents"}); err != nil {
+	if err := a.store.Save(domain.Device{ID: IntentsDevice, Plugin: PluginID, Name: "Intents", Entities: []domain.Entity{}}); err != nil {
 		return fmt.Errorf("save intents device: %w", err)
 	}
 	return nil
