@@ -114,6 +114,7 @@ func (a *App) Hello() contract.HelloResponse {
 		ContractVersion: contract.ContractVersion,
 		Definitions:     contract.DescribePlugin("Intent", "Exposes intent listeners as provider-neutral software agents.", "agent"),
 		DependsOn:       []string{"messenger", "storage"},
+		Setup:           contract.RequiredSetup("Core"),
 	}
 }
 
