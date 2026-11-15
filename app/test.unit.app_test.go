@@ -154,7 +154,7 @@ func (h *harness) records() []Record {
 	return out
 }
 
-// fakeAgent stands in for a plugin-opencode agent: it answers each prompt by
+// fakeAgent stands in for any provider implementing the agent contract: it answers each prompt by
 // raising Seq and setting the result, and can press a button first, as the LLM does.
 type fakeAgent struct {
 	mu      sync.Mutex
@@ -162,32 +162,43 @@ type fakeAgent struct {
 	press   *domain.EntityKey
 	reply   string
 	fail    string
+	silent  bool
+	cancels int
 }
 
 func (h *harness) agent(name string) *fakeAgent {
 	h.t.Helper()
 	f := &fakeAgent{reply: "Done."}
-	key := domain.EntityKey{Plugin: "plugin-opencode", DeviceID: "agent_" + name, ID: "prompt"}
+	key := domain.EntityKey{Plugin: "plugin-test-agent", DeviceID: "agent_" + name, ID: "prompt"}
 	state := domain.Agent{Status: "idle", Seq: 7}
 	save := func() {
-		if err := h.store.Save(domain.Entity{ID: "prompt", Plugin: "plugin-opencode", DeviceID: "agent_" + name, Type: "agent",
+		if err := h.store.Save(domain.Entity{ID: "prompt", Plugin: "plugin-test-agent", DeviceID: "agent_" + name, Type: "agent",
 			Name: name, Commands: []string{"agent_prompt", "agent_cancel"}, State: state}); err != nil {
 			h.t.Error(err)
 		}
 	}
 	save()
 	sub, err := h.cmds.Receive(key.Key()+".>", func(_ messenger.Address, cmd any) {
+		if _, ok := cmd.(domain.AgentCancel); ok {
+			f.mu.Lock()
+			f.cancels++
+			f.mu.Unlock()
+			return
+		}
 		p, ok := cmd.(domain.AgentPrompt)
 		if !ok {
 			return
 		}
 		f.mu.Lock()
 		f.prompts = append(f.prompts, p.Text)
-		press, reply, fail := f.press, f.reply, f.fail
+		press, reply, fail, silent := f.press, f.reply, f.fail, f.silent
 		f.mu.Unlock()
 		state.Seq++
 		state.Status, state.Session, state.Prompt, state.Result, state.Error = "thinking", p.Session, p.Text, "", ""
 		save()
+		if silent {
+			return
+		}
 		if press != nil {
 			h.cmds.Send(*press, domain.ButtonPress{})
 			time.Sleep(50 * time.Millisecond)
@@ -206,7 +217,7 @@ func (h *harness) agent(name string) *fakeAgent {
 }
 
 func TestListenersComeFromConfig(t *testing.T) {
-	h := start(t, "text:agent_text, phone:, BAD NAME:x", nil)
+	h := start(t, "text:plugin-codex.agent_text.prompt, phone:, BAD NAME:x", nil)
 	for _, name := range []string{"text", "phone"} {
 		raw, err := h.store.Get(listenerKey(name))
 		if err != nil {
@@ -218,7 +229,7 @@ func TestListenersComeFromConfig(t *testing.T) {
 			t.Fatalf("listener %s = %+v", name, e)
 		}
 	}
-	if h.app.listeners["text"].fallback != "plugin-opencode.agent_text.prompt" || h.app.listeners["phone"].fallback != "" {
+	if h.app.listeners["text"].fallback != "plugin-codex.agent_text.prompt" || h.app.listeners["phone"].fallback != "" {
 		t.Fatalf("fallbacks = %q, %q", h.app.listeners["text"].fallback, h.app.listeners["phone"].fallback)
 	}
 	if len(h.app.listeners) != 2 {
@@ -278,7 +289,7 @@ func TestNoMatchWithoutFallback(t *testing.T) {
 func TestMissGoesToAgentAndLinksPressedIntent(t *testing.T) {
 	var movie domain.EntityKey
 	var ag *fakeAgent
-	h := start(t, "text:agent_text", func(h *harness) {
+	h := start(t, "text:plugin-test-agent.agent_text.prompt", func(h *harness) {
 		movie = h.button("movie_time", "Movie time", "it's movie time")
 		ag = h.agent("text")
 	})
@@ -301,7 +312,7 @@ func TestMissGoesToAgentAndLinksPressedIntent(t *testing.T) {
 		t.Fatalf("records = %+v", recs)
 	}
 	r := recs[0]
-	if r.Tier != TierLLM || r.Text != "it's muddy time" || r.Normalized != "muddy time" || r.Agent != "plugin-opencode.agent_text.prompt" ||
+	if r.Tier != TierLLM || r.Text != "it's muddy time" || r.Normalized != "muddy time" || r.Agent != "plugin-test-agent.agent_text.prompt" ||
 		r.AgentSeq != 8 || len(r.ButtonsPressedDuring) != 1 || r.ButtonsPressedDuring[0] != movie.Key() ||
 		len(r.Candidates) != 1 || r.Candidates[0].Key != movie.Key() || r.MinScore != 0.8 || r.Session != "text-201" {
 		t.Fatalf("record = %+v", r)
@@ -310,7 +321,7 @@ func TestMissGoesToAgentAndLinksPressedIntent(t *testing.T) {
 
 func TestAgentErrorIsReported(t *testing.T) {
 	var ag *fakeAgent
-	h := start(t, "text:agent_text", func(h *harness) { ag = h.agent("text") })
+	h := start(t, "text:plugin-test-agent.agent_text.prompt", func(h *harness) { ag = h.agent("text") })
 	ag.mu.Lock()
 	ag.fail = "timed out"
 	ag.mu.Unlock()
@@ -322,6 +333,21 @@ func TestAgentErrorIsReported(t *testing.T) {
 	if recs := h.records(); len(recs) != 1 || recs[0].Error != "timed out" {
 		t.Fatalf("records = %+v", recs)
 	}
+}
+
+func TestAgentTimeoutSendsCancel(t *testing.T) {
+	var ag *fakeAgent
+	h := start(t, "text:plugin-test-agent.agent_text.prompt", func(h *harness) { ag = h.agent("text") })
+	h.app.llmLimit = 30 * time.Millisecond
+	ag.mu.Lock()
+	ag.silent = true
+	ag.mu.Unlock()
+	h.say("text", "take too long", "s1")
+	s := h.waitIdle("text", 1)
+	if s.Status != "error" || s.Error != "timed out waiting for the agent" {
+		t.Fatalf("state = %+v", s)
+	}
+	eventually(t, "agent cancellation", func() bool { ag.mu.Lock(); defer ag.mu.Unlock(); return ag.cancels == 1 })
 }
 
 func TestPhraseRecordIsWritten(t *testing.T) {

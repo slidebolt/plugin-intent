@@ -134,7 +134,7 @@ func (a *App) agentState(key domain.EntityKey) (domain.Agent, error) {
 	return e.State, nil
 }
 
-// askAgent hands the request to an OpenCode agent and waits for its answer. The
+// askAgent hands the request to any entity implementing the agent contract and waits for its answer. The
 // agent takes prompts in order, so the answer is the first finished state with this
 // session and a higher Seq than before the prompt was sent.
 func (a *App) askAgent(ctx context.Context, agentKey, text, session string) (string, int, error) {
@@ -157,6 +157,9 @@ func (a *App) askAgent(ctx context.Context, agentKey, text, session string) (str
 		select {
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
+				if err := a.cmds.Send(ek, domain.AgentCancel{}); err != nil {
+					log.Printf("plugin-intent: cancel timed-out %s: %v", agentKey, err)
+				}
 				return replyFailed, 0, errors.New("timed out waiting for the agent")
 			}
 			if err := a.cmds.Send(ek, domain.AgentCancel{}); err != nil {

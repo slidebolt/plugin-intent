@@ -1,7 +1,7 @@
 // Package app turns spoken or typed requests into button presses. Each intent is a
 // button carrying its phrases in the Phrase label; whatever automation watches the
 // button does the work. A listener device per channel takes the request: a phrase
-// match presses the button straight away, anything else goes to an OpenCode agent
+// match presses the button straight away, anything else goes to a configured agent
 // when one is configured.
 package app
 
@@ -60,7 +60,7 @@ type ListenerState struct {
 
 type listener struct {
 	name     string
-	fallback string // entity key of the OpenCode agent, or ""
+	fallback string // full entity key of the fallback agent, or ""
 	queue    chan domain.AgentPrompt
 
 	mu     sync.Mutex
@@ -125,8 +125,8 @@ func envFloat(name string, def float64) float64 {
 	return def
 }
 
-// parseListeners reads "text:agent_text,phone:agent_phone,kiosk:". The value names a
-// plugin-opencode agent ("agent_text"), a full entity key, or nothing for no fallback.
+// parseListeners reads full provider-neutral entity keys, for example
+// "text:plugin-codex.agent_text.prompt,phone:".
 func parseListeners(spec string) map[string]string {
 	out := map[string]string{}
 	for _, item := range strings.Split(spec, ",") {
@@ -139,8 +139,11 @@ func parseListeners(spec string) map[string]string {
 			log.Printf("plugin-intent: ignoring listener with a bad name: %q", name)
 			continue
 		}
-		if agent != "" && !strings.Contains(agent, ".") {
-			agent = "plugin-opencode." + agent + "." + entityPrompt
+		if agent != "" {
+			if _, err := parseKey(agent); err != nil {
+				log.Printf("plugin-intent: listener %q has invalid fallback: %v", name, err)
+				agent = ""
+			}
 		}
 		out[name] = agent
 	}
